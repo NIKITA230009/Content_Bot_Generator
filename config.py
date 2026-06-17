@@ -24,6 +24,7 @@ class Config(BaseSettings):
     MODEL_TEMPERATURE: float = 0.7
     MODEL_MAX_TOKENS: int = 1024
     LLM_MAX_RETRIES: int = 3
+    MAX_RETRIES: int = 10
 
     @property
     def SOURCE_TARGET_MAP(self) -> dict[int, list[int]]:

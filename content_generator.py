@@ -1,4 +1,6 @@
 import asyncio
+import functools
+import re
 import structlog
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -32,14 +34,20 @@ model = ChatOpenAI(
 
 _llm_sem = asyncio.Semaphore(3)
 
+agent = create_agent(model=model)
 
-@tool(return_direct=True)
-def approve_content(text: str) -> str:
-    """Return the final rewritten text for approval."""
-    return f"__APPROVE__:{text}"
-
-
-agent = create_agent(model=model, tools=[approve_content])
+_RE_MARKDOWN = [
+    (r'\*\*(.+?)\*\*', r'\1'),
+    (r'\*(.+?)\*', r'\1'),
+    (r'```(.+?)```', r'\1'),
+    (r'`(.+?)`', r'\1'),
+    (r'(?m)^#+\s*', ''),
+    (r'(?m)^>\s*', ''),
+    (r'!?\[(.+?)\]\(.+?\)', r'\1'),
+    (r'(?m)^[-*+]\s+', ''),
+    (r'_{2,}', ''),
+    (r'~~(.+?)~~', r'\1'),
+]
 
 _REWRITE_PROMPT = """Ты — копирайтер Telegram-канала. Перепиши текст ниже так, чтобы он:
 1. Сохранял все факты, цифры, ссылки без изменений
@@ -51,9 +59,28 @@ _REWRITE_PROMPT = """Ты — копирайтер Telegram-канала. Пер
 
 {text}
 
-Перепиши и вызови approve_content с финальным текстом."""
+Перепиши и отправь финальный текст."""
 
+def _strip_markdown(text: str) -> str:
+    for pattern, repl in _RE_MARKDOWN:
+        text = re.sub(pattern, repl, text)
+    return text.strip()
 
+def clean_output(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        result = await func(*args, **kwargs)
+        if hasattr(result, "answer"):
+            result.answer = _strip_markdown(result.answer)
+        return result
+    return wrapper
+
+def _count_tokens(msg: AIMessage) -> int:
+    if msg.usage_metadata:
+        return msg.usage_metadata.get("output_tokens", 0)
+    return len(msg.content) // 4 + len(msg.content.split())
+
+@clean_output
 async def ask_for_rewrite(text: str) -> str:
     if not text.strip():
         return text
@@ -62,13 +89,16 @@ async def ask_for_rewrite(text: str) -> str:
         SystemMessage(content=_REWRITE_PROMPT.format(text=text)),
         HumanMessage(content=text),
     ]
-    async with _llm_sem:
-        result = await agent.ainvoke({"messages": messages})
-    last = result["messages"][-1]
-    if isinstance(last, ToolMessage):
-        _, content = last.content.split(":", 1)
-        return content.strip()
-    return last.content.strip()
+
+    last_msg = None  
+    
+    try:
+        async with _llm_sem:
+            result = await agent.ainvoke({"messages": messages})
+            last_msg = result["messages"][-1]
+    except Exception as e:
+        print(f"[ERROR] agent.ainvoke() failed: {e}")        
+    return last_msg.content.strip()
 
 
 # ── Worker logic ─────────────────────────────────────────

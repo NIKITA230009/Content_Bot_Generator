@@ -1,64 +1,115 @@
 import json
 
-import asyncpg
+from sqlalchemy import (
+    Column, BigInteger, Text, Boolean, DateTime, JSON,
+    ForeignKey, UniqueConstraint, select, update, func,
+)
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import DeclarativeBase, relationship, joinedload
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
 from config import config
 
-_pool: asyncpg.Pool | None = None
-_DB_URL = config.DATABASE_URL.replace("+asyncpg", "").replace("+psycopg2", "")
+
+# ── Models ────────────────────────────────────────────────
 
 
-async def get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(_DB_URL, min_size=1, max_size=2)
-    return _pool
+class Base(DeclarativeBase):
+    pass
+
+
+class SourceChannel(Base):
+    __tablename__ = "source_channels"
+
+    id = Column(BigInteger, primary_key=True)
+    title = Column(Text, nullable=True)
+    username = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class GeneratedContent(Base):
+    __tablename__ = "generated_content"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_post_id = Column(BigInteger, nullable=True)
+    rewritten_text = Column(Text, nullable=False)
+    model_used = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    raw_post = relationship("RawPost", foreign_keys=[raw_post_id], lazy="selectin")
+    publish_logs = relationship("PublishLog", back_populates="generated_content", lazy="selectin")
+
+
+class RawPost(Base):
+    __tablename__ = "raw_posts"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_channel_id = Column(BigInteger, nullable=False)
+    message_id = Column(BigInteger, nullable=False)
+    text = Column(Text, nullable=True)
+    media_group_id = Column(Text, nullable=True)
+    media = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed = Column(Boolean, default=False)
+    generated_content_id = Column(BigInteger, ForeignKey("generated_content.id"), nullable=True)
+
+    generated_content = relationship("GeneratedContent", lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("source_channel_id", "message_id", name="uq_raw_post_source_message"),
+    )
+
+
+class PublishLog(Base):
+    __tablename__ = "publish_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    generated_content_id = Column(BigInteger, ForeignKey("generated_content.id"), nullable=True)
+    target_channel_id = Column(BigInteger, nullable=False)
+    published_message_id = Column(BigInteger, nullable=True)
+    published_at = Column(DateTime(timezone=True), server_default=func.now())
+    success = Column(Boolean, nullable=False)
+    error = Column(Text, nullable=True)
+
+    generated_content = relationship("GeneratedContent", back_populates="publish_logs", lazy="selectin")
+
+
+# ── Engine / Session ──────────────────────────────────────
+
+
+_engine = None
+_session_factory = None
+
+
+async def get_session() -> AsyncSession:
+    global _engine, _session_factory
+    if _engine is None:
+        _engine = create_async_engine(
+            config.DATABASE_URL,
+            pool_size=2,
+            max_overflow=0,
+            pool_pre_ping=True,
+        )
+        _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    return _session_factory()
+
+
+# ── Helpers ───────────────────────────────────────────────
+
+
+def _orm_to_dict(obj) -> dict | None:
+    if obj is None:
+        return None
+    return {c.key: getattr(obj, c.key) for c in obj.__table__.columns}
+
+
+# ── Repository ────────────────────────────────────────────
 
 
 async def init_db():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS source_channels (
-                id BIGINT PRIMARY KEY,
-                title TEXT,
-                username TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS generated_content (
-                id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-                raw_post_id BIGINT,
-                rewritten_text TEXT NOT NULL,
-                model_used TEXT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS raw_posts (
-                id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-                source_channel_id BIGINT NOT NULL,
-                message_id BIGINT NOT NULL,
-                text TEXT,
-                media_group_id TEXT,
-                media JSONB,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                processed BOOLEAN DEFAULT FALSE,
-                generated_content_id BIGINT REFERENCES generated_content(id),
-                UNIQUE (source_channel_id, message_id)
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS publish_log (
-                id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-                generated_content_id BIGINT REFERENCES generated_content(id),
-                target_channel_id BIGINT NOT NULL,
-                published_message_id BIGINT,
-                published_at TIMESTAMPTZ DEFAULT now(),
-                success BOOLEAN NOT NULL,
-                error TEXT
-            )
-        """)
+    async with get_session() as session:
+        async with session.begin():
+            await session.run_sync(Base.metadata.create_all)
 
 
 async def save_raw_post(
@@ -68,56 +119,68 @@ async def save_raw_post(
     media_group_id: str | None,
     media: list,
 ) -> int | None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO raw_posts (source_channel_id, message_id, text, media_group_id, media)
-               VALUES ($1, $2, $3, $4, $5::jsonb)
-               ON CONFLICT (source_channel_id, message_id) DO NOTHING
-               RETURNING id""",
-            source_channel_id, message_id, text, media_group_id,
-            json.dumps(media) if media else None,
+    async with get_session() as session:
+        post = RawPost(
+            source_channel_id=source_channel_id,
+            message_id=message_id,
+            text=text,
+            media_group_id=media_group_id,
+            media=json.dumps(media) if media else None,
         )
-        return row["id"] if row else None
+        session.add(post)
+        try:
+            await session.commit()
+            return post.id
+        except IntegrityError:
+            await session.rollback()
+            return None
 
 
 async def get_raw_post_by_id(post_id: int) -> dict | None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM raw_posts WHERE id = $1", post_id)
-        return dict(row) if row else None
+    async with get_session() as session:
+        result = await session.execute(
+            select(RawPost).where(RawPost.id == post_id)
+        )
+        return _orm_to_dict(result.scalar_one_or_none())
 
 
 async def mark_raw_post_processed(post_id: int, gen_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE raw_posts SET processed = TRUE, generated_content_id = $2 WHERE id = $1",
-            post_id, gen_id,
+    async with get_session() as session:
+        await session.execute(
+            update(RawPost)
+            .where(RawPost.id == post_id)
+            .values(processed=True, generated_content_id=gen_id)
         )
+        await session.commit()
 
 
 async def save_generated_content(raw_post_id: int, rewritten_text: str, model_used: str) -> int:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "INSERT INTO generated_content (raw_post_id, rewritten_text, model_used) VALUES ($1, $2, $3) RETURNING id",
-            raw_post_id, rewritten_text, model_used,
+    async with get_session() as session:
+        gc = GeneratedContent(
+            raw_post_id=raw_post_id,
+            rewritten_text=rewritten_text,
+            model_used=model_used,
         )
-        return row["id"]
+        session.add(gc)
+        await session.commit()
+        return gc.id
 
 
 async def get_generated_content(content_id: int) -> dict | None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT gc.*, rp.source_channel_id, rp.media, rp.text AS original_text
-               FROM generated_content gc
-               JOIN raw_posts rp ON rp.id = gc.raw_post_id
-               WHERE gc.id = $1""",
-            content_id,
+    async with get_session() as session:
+        result = await session.execute(
+            select(GeneratedContent)
+            .options(joinedload(GeneratedContent.raw_post))
+            .where(GeneratedContent.id == content_id)
         )
-        return dict(row) if row else None
+        gc = result.unique().scalar_one_or_none()
+        if gc is None or gc.raw_post is None:
+            return None
+        data = _orm_to_dict(gc)
+        data["source_channel_id"] = gc.raw_post.source_channel_id
+        data["media"] = gc.raw_post.media
+        data["original_text"] = gc.raw_post.text
+        return data
 
 
 async def log_publication(
@@ -127,20 +190,28 @@ async def log_publication(
     success: bool,
     error: str | None,
 ):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO publish_log (generated_content_id, target_channel_id, published_message_id, success, error)
-               VALUES ($1, $2, $3, $4, $5)""",
-            generated_content_id, target_channel_id, published_message_id, success, error,
+    async with get_session() as session:
+        session.add(
+            PublishLog(
+                generated_content_id=generated_content_id,
+                target_channel_id=target_channel_id,
+                published_message_id=published_message_id,
+                success=success,
+                error=error,
+            )
         )
+        await session.commit()
 
 
 async def is_already_published(generated_content_id: int, target_channel_id: int) -> bool:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT 1 FROM publish_log WHERE generated_content_id = $1 AND target_channel_id = $2 AND success = TRUE",
-            generated_content_id, target_channel_id,
+    async with get_session() as session:
+        result = await session.execute(
+            select(PublishLog.id)
+            .where(
+                PublishLog.generated_content_id == generated_content_id,
+                PublishLog.target_channel_id == target_channel_id,
+                PublishLog.success == True,
+            )
+            .limit(1)
         )
-        return row is not None
+        return result.first() is not None
