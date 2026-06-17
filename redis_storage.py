@@ -62,8 +62,8 @@ async def reset_retry(stream: str, msg_id: str):
 async def add_media_group_part(group_id: str, part_data: dict, timeout: int) -> bool:
     r = await get_redis()
     key = f"media_group:{group_id}"
-    await r.rpush(key, json.dumps(part_data, ensure_ascii=False))
-    was_first = await r.llen(key) == 1
+    await r.rpush(key, json.dumps(part_data, ensure_ascii=False))  # type: ignore[arg-type]
+    was_first = await r.llen(key) == 1  # type: ignore[arg-type]
     if was_first:
         await r.expire(key, timeout + 10)
     return was_first
@@ -71,7 +71,7 @@ async def add_media_group_part(group_id: str, part_data: dict, timeout: int) -> 
 
 async def get_media_group(group_id: str) -> list[dict]:
     r = await get_redis()
-    raw = await r.lrange(f"media_group:{group_id}", 0, -1)
+    raw = await r.lrange(f"media_group:{group_id}", 0, -1)  # type: ignore[arg-type]
     await r.delete(f"media_group:{group_id}")
     return [json.loads(x) for x in raw]
 

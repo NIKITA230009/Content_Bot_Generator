@@ -58,19 +58,19 @@ async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
     text = content.rewritten_text or ""
 
     if media:
-        group = []
+        group: list[InputMediaPhoto | InputMediaVideo] = []
         for i, m in enumerate(media):
             if m["type"] == "photo":
                 inp = InputMediaPhoto(media=m["file_id"])
             else:
                 inp = InputMediaVideo(media=m["file_id"])
             if i == 0:
-                inp.caption = text
+                inp.caption = text  # type: ignore[arg-type]
             group.append(inp)
-        msgs = await bot.send_media_group(channel_id, group)
+        msgs = await bot.send_media_group(channel_id, group)  # type: ignore[arg-type]
         return msgs[0].message_id
 
-    msg = await bot.send_message(channel_id, text)
+    msg = await bot.send_message(channel_id, text)  # type: ignore[arg-type]
     return msg.message_id
 
 

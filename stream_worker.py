@@ -3,6 +3,8 @@ import os
 import socket
 import structlog
 
+from redis import asyncio as aioredis
+
 from config import config
 from redis_storage import (
     get_redis, ensure_stream_group, push_to_dead_letter,
@@ -42,6 +44,12 @@ async def stream_worker(
                 continue
 
             _, messages = result[0]
+            if not messages:
+                if check_backlog:
+                    check_backlog = False
+                    continue
+                await _claim_stuck(stream, group, consumer, process_func, r)
+                continue
             msg_id, msg_data = messages[0]
             item = msg_data.get("item")
 
@@ -68,7 +76,10 @@ async def stream_worker(
             await asyncio.sleep(5)
 
 
-async def _claim_stuck(stream, group, consumer, process_func, r, min_idle_ms=300000):
+async def _claim_stuck(
+    stream: str, group: str, consumer: str,
+    process_func, r: aioredis.Redis, min_idle_ms: int = 300000,
+):
     cursor = "0-0"
     while cursor:
         result = await r.xautoclaim(stream, group, consumer, min_idle_ms, cursor, count=10)

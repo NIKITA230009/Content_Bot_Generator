@@ -3,9 +3,8 @@ import functools
 import re
 import structlog
 from langchain.agents import create_agent
-from langchain.tools import tool
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from config import config
 from db import get_raw_post_by_id, save_generated_content, mark_raw_post_processed
@@ -19,7 +18,7 @@ logger = structlog.get_logger()
 model = ChatOpenAI(
     model=config.MODEL_NAME,
     temperature=config.MODEL_TEMPERATURE,
-    max_tokens=config.MODEL_MAX_TOKENS,
+    max_tokens=config.MODEL_MAX_TOKENS, # type: ignore
     max_retries=config.LLM_MAX_RETRIES,
     api_key=config.OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
@@ -86,14 +85,14 @@ async def ask_for_rewrite(text: str) -> str:
         SystemMessage(content=_REWRITE_PROMPT.format(text=text)),
         HumanMessage(content=text),
     ]
-    last_msg = None 
     try:
         async with _llm_sem:
             result = await agent.ainvoke({"messages": messages})
             last_msg = result["messages"][-1]
+            return last_msg.content.strip()
     except Exception as e:
-        print(f"[ERROR] agent.ainvoke() failed: {e}")   
-    return last_msg.content.strip()
+        logger.exception("agent_invoke_failed", error=str(e))
+        return text
     
 
 
@@ -108,9 +107,9 @@ async def process_post(post_id_str: str):
         logger.warning("raw_post_not_found", post_id=post_id)
         return
 
-    rewritten = await ask_for_rewrite(raw.text or "")
-    gen_id = await save_generated_content(raw.id, rewritten, config.MODEL_NAME)
-    await mark_raw_post_processed(raw.id, gen_id)
+    rewritten = await ask_for_rewrite(raw.text or "")  # type: ignore[arg-type]
+    gen_id = await save_generated_content(raw.id, rewritten, config.MODEL_NAME)  # type: ignore[arg-type]
+    await mark_raw_post_processed(raw.id, gen_id)  # type: ignore[arg-type]
     await push_to_ready_stream(gen_id)
     logger.info("content_generated", post_id=post_id, gen_id=gen_id)
 

@@ -1,5 +1,3 @@
-import json
-
 from sqlalchemy import (
     Column, BigInteger, Text, Boolean, DateTime, JSON,
     ForeignKey, UniqueConstraint, select, update, func,
@@ -77,13 +75,12 @@ class PublishLog(Base):
 # ── Engine / Session ──────────────────────────────────────
 
 
-_engine = None
-_session_factory = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-async def get_session() -> AsyncSession:
-    global _engine, _session_factory
-    if _engine is None:
+def get_session() -> AsyncSession:
+    global _session_factory
+    if _session_factory is None:
         _engine = create_async_engine(
             config.DATABASE_URL,
             pool_size=2,
@@ -98,9 +95,10 @@ async def get_session() -> AsyncSession:
 
 
 async def init_db():
-    async with get_session() as session:
-        async with session.begin():
-            await session.run_sync(Base.metadata.create_all)
+    engine = create_async_engine(config.DATABASE_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
 
 
 async def save_raw_post(
@@ -116,12 +114,12 @@ async def save_raw_post(
             message_id=message_id,
             text=text,
             media_group_id=media_group_id,
-            media=json.dumps(media) if media else None,
+            media=media if media else None,
         )
         session.add(post)
         try:
             await session.commit()
-            return post.id
+            return post.id  # type: ignore[return-type]
         except IntegrityError:
             await session.rollback()
             return None
@@ -154,7 +152,7 @@ async def save_generated_content(raw_post_id: int, rewritten_text: str, model_us
         )
         session.add(gc)
         await session.commit()
-        return gc.id
+        return gc.id  # type: ignore[return-type]
 
 
 async def get_generated_content(content_id: int) -> GeneratedContent | None:
