@@ -4,25 +4,14 @@ import structlog
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
 from config import config
-from db import get_generated_content, log_publication, is_already_published
-from redis_storage import (
-    get_last_publish_time, set_last_publish_time,
-    remove_from_processing,
-)
-from reliable_queue import reliable_worker
+from db import GeneratedContent, get_generated_content, log_publication, is_already_published
+from redis_storage import get_last_publish_time, set_last_publish_time
+from stream_worker import stream_worker
 
 logger = structlog.get_logger()
 
 _bot: Bot | None = None
-
-
-def init_bot(token: str):
-    global _bot
-    _bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
-    return _bot
 
 
 async def process_content(content_id_str: str):
@@ -32,7 +21,7 @@ async def process_content(content_id_str: str):
         logger.warning("generated_content_not_found", content_id=content_id)
         return
 
-    source_id = content["source_channel_id"]
+    source_id = content.raw_post.source_channel_id
     target_ids = config.SOURCE_TARGET_MAP.get(source_id, [])
     if not target_ids:
         logger.warning("no_target_channels", source_id=source_id)
@@ -51,8 +40,7 @@ async def process_content(content_id_str: str):
             await asyncio.sleep(wait)
 
         try:
-            msg = await _send_to_channel(target_id, content)
-            msg_id = msg[0].message_id if isinstance(msg, list) else msg.message_id
+            msg_id = await _send_to_channel(target_id, content)
             await log_publication(content_id, target_id, msg_id, True, None)
             await set_last_publish_time(target_id, time.time())
             logger.info("published", content_id=content_id, target_id=target_id)
@@ -60,16 +48,14 @@ async def process_content(content_id_str: str):
             await log_publication(content_id, target_id, None, False, str(e))
             logger.error("publish_error", content_id=content_id, target_id=target_id, error=str(e))
 
-    await remove_from_processing("queue:ready:processing", content_id_str)
-
-
-async def _send_to_channel(channel_id: int, content: dict):
+async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
+    global _bot
+    if _bot is None:
+        _bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
     bot = _bot
-    if not bot:
-        raise RuntimeError("Bot not initialized")
 
-    media = content.get("media") or []
-    text = content.get("rewritten_text") or ""
+    media = content.raw_post.media or []
+    text = content.rewritten_text or ""
 
     if media:
         group = []
@@ -81,10 +67,12 @@ async def _send_to_channel(channel_id: int, content: dict):
             if i == 0:
                 inp.caption = text
             group.append(inp)
-        return await bot.send_media_group(channel_id, group)
+        msgs = await bot.send_media_group(channel_id, group)
+        return msgs[0].message_id
 
-    return await bot.send_message(channel_id, text)
+    msg = await bot.send_message(channel_id, text)
+    return msg.message_id
 
 
 async def run_publisher_worker():
-    await reliable_worker("queue:ready", process_content)
+    await stream_worker("stream:ready", "publishers", process_content)

@@ -5,7 +5,7 @@ from sqlalchemy import (
     ForeignKey, UniqueConstraint, select, update, func,
 )
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, relationship, joinedload
+from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from config import config
@@ -94,15 +94,6 @@ async def get_session() -> AsyncSession:
     return _session_factory()
 
 
-# ── Helpers ───────────────────────────────────────────────
-
-
-def _orm_to_dict(obj) -> dict | None:
-    if obj is None:
-        return None
-    return {c.key: getattr(obj, c.key) for c in obj.__table__.columns}
-
-
 # ── Repository ────────────────────────────────────────────
 
 
@@ -136,12 +127,12 @@ async def save_raw_post(
             return None
 
 
-async def get_raw_post_by_id(post_id: int) -> dict | None:
+async def get_raw_post_by_id(post_id: int) -> RawPost | None:
     async with get_session() as session:
         result = await session.execute(
             select(RawPost).where(RawPost.id == post_id)
         )
-        return _orm_to_dict(result.scalar_one_or_none())
+        return result.scalar_one_or_none()
 
 
 async def mark_raw_post_processed(post_id: int, gen_id: int):
@@ -166,21 +157,15 @@ async def save_generated_content(raw_post_id: int, rewritten_text: str, model_us
         return gc.id
 
 
-async def get_generated_content(content_id: int) -> dict | None:
+async def get_generated_content(content_id: int) -> GeneratedContent | None:
     async with get_session() as session:
         result = await session.execute(
-            select(GeneratedContent)
-            .options(joinedload(GeneratedContent.raw_post))
-            .where(GeneratedContent.id == content_id)
+            select(GeneratedContent).where(GeneratedContent.id == content_id)
         )
-        gc = result.unique().scalar_one_or_none()
+        gc = result.scalar_one_or_none()
         if gc is None or gc.raw_post is None:
             return None
-        data = _orm_to_dict(gc)
-        data["source_channel_id"] = gc.raw_post.source_channel_id
-        data["media"] = gc.raw_post.media
-        data["original_text"] = gc.raw_post.text
-        return data
+        return gc
 
 
 async def log_publication(
@@ -212,6 +197,5 @@ async def is_already_published(generated_content_id: int, target_channel_id: int
                 PublishLog.target_channel_id == target_channel_id,
                 PublishLog.success == True,
             )
-            .limit(1)
         )
         return result.first() is not None

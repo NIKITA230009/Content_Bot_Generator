@@ -4,7 +4,7 @@ from aiogram.types import Message
 
 from config import config
 from db import save_raw_post
-from redis_storage import push_to_raw_queue
+from redis_storage import add_tokens, push_to_raw_stream
 from media_aggregator import aggregate_media_message
 
 logger = structlog.get_logger()
@@ -25,7 +25,8 @@ async def handle_channel_post(msg: Message):
         media=post.get("media", []),
     )
     if post_id:
-        await push_to_raw_queue(post_id)
+        await push_to_raw_stream(post_id)
         logger.info("raw_post_saved", post_id=post_id, channel_id=msg.chat.id)
+        await add_tokens(str(msg.chat.id),1)
     else:
         logger.info("raw_post_duplicate", message_id=post["message_id"])

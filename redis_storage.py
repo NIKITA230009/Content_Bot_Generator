@@ -12,45 +12,51 @@ async def get_redis() -> aioredis.Redis:
     return _redis
 
 
-# ── Raw queue ────────────────────────────────────────────
+# ── Streams ────────────────────────────────────────────────
 
 
-async def push_to_raw_queue(post_id: int):
+async def push_to_raw_stream(post_id: int):
     r = await get_redis()
-    await r.lpush("queue:raw", str(post_id))
+    await r.xadd("stream:raw", {"item": str(post_id)})
 
 
-async def push_to_ready_queue(content_id: int):
+async def push_to_ready_stream(content_id: int):
     r = await get_redis()
-    await r.lpush("queue:ready", str(content_id))
+    await r.xadd("stream:ready", {"item": str(content_id)})
 
 
-async def brpoplpush_from_queue(queue: str, processing_queue: str, timeout: int) -> str | None:
+async def ensure_stream_group(stream: str, group: str):
     r = await get_redis()
-    return await r.brpoplpush(queue, processing_queue, timeout)
+    try:
+        await r.xgroup_create(stream, group, id="$", mkstream=True)
+    except Exception as e:
+        if "BUSYGROUP" not in str(e):
+            raise
 
 
-async def remove_from_processing(queue: str, item: str):
+async def push_to_dead_letter(stream: str, item: str, error: str, msg_id: str):
     r = await get_redis()
-    await r.lrem(queue, 0, item)
+    await r.xadd(f"{stream}:dead", {
+        "item": item,
+        "error": error,
+        "original_msg_id": msg_id,
+    })
 
 
-async def get_processing_items(queue: str) -> list[str]:
+async def increment_retry(stream: str, msg_id: str, ttl: int = 86400) -> int:
     r = await get_redis()
-    return await r.lrange(queue, 0, -1)
+    key = f"retry:{stream}:{msg_id}"
+    count = await r.incr(key)
+    await r.expire(key, ttl)
+    return count
 
 
-async def return_to_queue(queue: str, item: str):
+async def reset_retry(stream: str, msg_id: str):
     r = await get_redis()
-    await r.rpush(queue, item)
+    await r.delete(f"retry:{stream}:{msg_id}")
 
 
-async def processing_queue_len(queue: str) -> int:
-    r = await get_redis()
-    return await r.llen(queue)
-
-
-# ── Media group aggregation ──────────────────────────────
+# ── Media group aggregation with redis lists ──────────────────────────────
 
 
 async def add_media_group_part(group_id: str, part_data: dict, timeout: int) -> bool:
@@ -70,37 +76,6 @@ async def get_media_group(group_id: str) -> list[dict]:
     return [json.loads(x) for x in raw]
 
 
-# ── Locks ────────────────────────────────────────────────
-
-
-async def acquire_lock(name: str, ttl: int) -> bool:
-    r = await get_redis()
-    return bool(await r.set(f"lock:{name}", "1", nx=True, ex=ttl))
-
-
-async def release_lock(name: str):
-    r = await get_redis()
-    await r.delete(f"lock:{name}")
-
-
-# ── In-progress guard ────────────────────────────────────
-
-
-async def is_in_progress(post_id: int) -> bool:
-    r = await get_redis()
-    return bool(await r.exists(f"in_progress:{post_id}"))
-
-
-async def mark_in_progress(post_id: int, ttl: int = 300):
-    r = await get_redis()
-    await r.setex(f"in_progress:{post_id}", ttl, "1")
-
-
-async def clear_in_progress(post_id: int):
-    r = await get_redis()
-    await r.delete(f"in_progress:{post_id}")
-
-
 # ── Publish intervals ────────────────────────────────────
 
 
@@ -113,3 +88,25 @@ async def get_last_publish_time(channel_id: int) -> float:
 async def set_last_publish_time(channel_id: int, timestamp: float):
     r = await get_redis()
     await r.set(f"last_publish:{channel_id}", str(timestamp))
+
+
+# ── Tokens ────────────────────────────────────────────────
+
+_TOKEN_TTL = 86400
+
+
+async def get_tokens(user_id: str) -> int:
+    r = await get_redis()
+    val = await r.get(f"tokens:{user_id}")
+    return int(val) if val else 0
+
+
+async def add_tokens(user_id: str, delta: int) -> None:
+    r = await get_redis()
+    await r.incrby(f"tokens:{user_id}", delta)
+    await r.expire(f"tokens:{user_id}", _TOKEN_TTL)
+
+
+async def delete_tokens(user_id: str) -> None:
+    r = await get_redis()
+    await r.delete(f"tokens:{user_id}")
