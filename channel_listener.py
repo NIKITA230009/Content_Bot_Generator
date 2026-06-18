@@ -13,6 +13,7 @@ router = Router()
 
 @router.channel_post(F.chat.id.in_(config.SOURCE_TARGET_MAP.keys()))
 async def handle_channel_post(msg: Message):
+    logger.info("channel_post_received", chat_id=msg.chat.id, message_id=msg.message_id, has_media_group=bool(msg.media_group_id))
     post = await aggregate_media_message(msg, config.MEDIA_AGGREGATION_TIMEOUT)
     if post is None:
         return

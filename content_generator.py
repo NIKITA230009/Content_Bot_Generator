@@ -87,9 +87,12 @@ async def ask_for_rewrite(text: str) -> str:
     ]
     try:
         async with _llm_sem:
+            logger.info("llm_invoke_start", text_len=len(text.strip()))
             result = await agent.ainvoke({"messages": messages})
             last_msg = result["messages"][-1]
-            return last_msg.content.strip()
+            content = last_msg.content.strip()
+            logger.info("llm_response", post_id=0, length=len(content), preview=content[:200], msg_type=type(last_msg).__name__)
+            return content
     except Exception as e:
         logger.exception("agent_invoke_failed", error=str(e))
         return text
@@ -101,13 +104,16 @@ async def ask_for_rewrite(text: str) -> str:
 
 async def process_post(post_id_str: str):
     post_id = int(post_id_str)
+    logger.info("processing_post", post_id=post_id)
 
     raw = await get_raw_post_by_id(post_id)
     if not raw:
         logger.warning("raw_post_not_found", post_id=post_id)
         return
 
+    logger.info("raw_post_text", post_id=post_id, text_length=len(raw.text or ""), text_preview=(raw.text or "")[:100])
     rewritten = await ask_for_rewrite(raw.text or "")  # type: ignore[arg-type]
+    logger.info("rewritten_text", post_id=post_id, length=len(rewritten), preview=rewritten[:120])
     gen_id = await save_generated_content(raw.id, rewritten, config.MODEL_NAME)  # type: ignore[arg-type]
     await mark_raw_post_processed(raw.id, gen_id)  # type: ignore[arg-type]
     await push_to_ready_stream(gen_id)

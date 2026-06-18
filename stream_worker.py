@@ -52,6 +52,7 @@ async def stream_worker(
                 continue
             msg_id, msg_data = messages[0]
             item = msg_data.get("item")
+            logger.info("stream_item_received", stream=stream, item=item, msg_id=msg_id)
 
             await process_func(item)
             await r.xack(stream, group, msg_id)

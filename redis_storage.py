@@ -1,6 +1,9 @@
 import json
+import structlog
 import redis.asyncio as aioredis
 from config import config
+
+logger = structlog.get_logger()
 
 _redis: aioredis.Redis | None = None
 
@@ -8,7 +11,7 @@ _redis: aioredis.Redis | None = None
 async def get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(config.REDIS_URL, decode_responses=True)
+        _redis = aioredis.from_url(config.REDIS_URL, decode_responses=True, socket_timeout=60)
     return _redis
 
 
@@ -18,11 +21,13 @@ async def get_redis() -> aioredis.Redis:
 async def push_to_raw_stream(post_id: int):
     r = await get_redis()
     await r.xadd("stream:raw", {"item": str(post_id)})
+    logger.info("raw_stream_pushed", stream="stream:raw", item=post_id)
 
 
 async def push_to_ready_stream(content_id: int):
     r = await get_redis()
     await r.xadd("stream:ready", {"item": str(content_id)})
+    logger.info("ready_stream_pushed", stream="stream:ready", item=content_id)
 
 
 async def ensure_stream_group(stream: str, group: str):

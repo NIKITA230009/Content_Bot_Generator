@@ -29,7 +29,7 @@ class GeneratedContent(Base):
     __tablename__ = "generated_content"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    raw_post_id = Column(BigInteger, nullable=True)
+    raw_post_id = Column(BigInteger, ForeignKey("raw_posts.id"), nullable=True)
     rewritten_text = Column(Text, nullable=False)
     model_used = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -51,7 +51,7 @@ class RawPost(Base):
     processed = Column(Boolean, default=False)
     generated_content_id = Column(BigInteger, ForeignKey("generated_content.id"), nullable=True)
 
-    generated_content = relationship("GeneratedContent", lazy="selectin")
+    generated_content = relationship("GeneratedContent", foreign_keys=[generated_content_id], lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("source_channel_id", "message_id", name="uq_raw_post_source_message"),
@@ -88,7 +88,7 @@ def get_session() -> AsyncSession:
             pool_pre_ping=True,
         )
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
-    return _session_factory()
+    return _session_factory() # type: ignore
 
 
 # ── Repository ────────────────────────────────────────────

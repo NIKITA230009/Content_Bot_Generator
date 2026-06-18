@@ -10,7 +10,8 @@ _media_futures: dict[str, asyncio.Future] = {}
 
 
 async def aggregate_media_message(msg: Message, timeout: int) -> dict | None:
-    if not msg.media_group_id:  #Если у нас одиночный пост, а не альбом, то просто возвращаем его содержимое без агрегации через редис таймер и футуры
+    if not msg.media_group_id:
+        logger.info("single_post_no_aggregation", message_id=msg.message_id)
         return _extract_media(msg)
 
     group_id = msg.media_group_id
@@ -56,7 +57,7 @@ def _extract_media(msg: Message) -> dict:
         media.append({"type": "video", "file_id": msg.video.file_id})
     return {
         "message_id": msg.message_id,
-        "text": msg.caption or "",
+        "text": msg.caption or msg.text or "",
         "media": media,
     }
 

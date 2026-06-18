@@ -57,6 +57,9 @@ async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
     media = content.raw_post.media or []
     text = content.rewritten_text or ""
 
+    if not text and not media:
+        raise ValueError("empty content — nothing to send")
+
     if media:
         group: list[InputMediaPhoto | InputMediaVideo] = []
         for i, m in enumerate(media):
