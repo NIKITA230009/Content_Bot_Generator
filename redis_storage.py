@@ -11,8 +11,24 @@ _redis: aioredis.Redis | None = None
 async def get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(config.REDIS_URL, decode_responses=True, socket_timeout=60)
+        _redis = aioredis.from_url(
+            config.REDIS_URL,
+            decode_responses=True,
+            socket_timeout=60,
+            socket_connect_timeout=10,
+            socket_keepalive=True,
+        )
     return _redis
+
+
+async def reset_redis():
+    global _redis
+    if _redis is not None:
+        try:
+            await _redis.close()
+        except Exception:
+            pass
+    _redis = None
 
 
 # ── Streams ────────────────────────────────────────────────
@@ -48,17 +64,17 @@ async def push_to_dead_letter(stream: str, item: str, error: str, msg_id: str):
     })
 
 
-async def increment_retry(stream: str, msg_id: str, ttl: int = 86400) -> int:
+async def increment_retry(stream: str, item: str, ttl: int = 86400) -> int:
     r = await get_redis()
-    key = f"retry:{stream}:{msg_id}"
+    key = f"retry:{stream}:{item}"
     count = await r.incr(key)
     await r.expire(key, ttl)
     return count
 
 
-async def reset_retry(stream: str, msg_id: str):
+async def reset_retry(stream: str, item: str):
     r = await get_redis()
-    await r.delete(f"retry:{stream}:{msg_id}")
+    await r.delete(f"retry:{stream}:{item}")
 
 
 # ── Media group aggregation with redis lists ──────────────────────────────

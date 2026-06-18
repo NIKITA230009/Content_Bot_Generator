@@ -1,6 +1,5 @@
 import asyncio
 import structlog
-from aiogram.types import Message
 
 from redis_storage import add_media_group_part, get_media_group
 
@@ -9,13 +8,17 @@ logger = structlog.get_logger()
 _media_futures: dict[str, asyncio.Future] = {}
 
 
-async def aggregate_media_message(msg: Message, timeout: int) -> dict | None:
-    if not msg.media_group_id:
-        logger.info("single_post_no_aggregation", message_id=msg.message_id)
-        return _extract_media(msg)
+async def aggregate_media_message(msg_data: dict, timeout: int) -> dict | None:
+    if not msg_data.get("media_group_id"):
+        logger.info("single_post_no_aggregation", message_id=msg_data["message_id"])
+        return msg_data
 
-    group_id = msg.media_group_id
-    part = _extract_media(msg)
+    group_id = msg_data["media_group_id"]
+    part = {
+        "message_id": msg_data["message_id"],
+        "text": msg_data.get("text", ""),
+        "media": msg_data.get("media", []),
+    }
     is_first = await add_media_group_part(group_id, part, timeout)
 
     if is_first:
@@ -47,19 +50,6 @@ async def _aggregation_timer(group_id: str, timeout: int):
             fut.set_exception(e)
     finally:
         _media_futures.pop(group_id, None)
-
-
-def _extract_media(msg: Message) -> dict:
-    media = []
-    if msg.photo:
-        media.append({"type": "photo", "file_id": msg.photo[-1].file_id})
-    if msg.video:
-        media.append({"type": "video", "file_id": msg.video.file_id})
-    return {
-        "message_id": msg.message_id,
-        "text": msg.caption or msg.text or "",
-        "media": media,
-    }
 
 
 def _merge_parts(group_id: str, parts: list[dict]) -> dict:

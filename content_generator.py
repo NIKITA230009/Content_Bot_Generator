@@ -50,6 +50,7 @@ _REWRITE_PROMPT = """Ты — копирайтер Telegram-канала. Пер
 2. Был живым, понятным, без воды
 3. Сохранял эмодзи
 4. Без markdown-разметки, без звёздочек, без обратных кавычек
+5. Без ссылок на каналы, без упоминаний источников, без рекламы — публикуется как оригинальный контент вашего канала
 
 Исходный текст:
 
@@ -88,7 +89,10 @@ async def ask_for_rewrite(text: str) -> str:
     try:
         async with _llm_sem:
             logger.info("llm_invoke_start", text_len=len(text.strip()))
-            result = await agent.ainvoke({"messages": messages})
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": messages}),
+                timeout=60.0,
+            )
             last_msg = result["messages"][-1]
             content = last_msg.content.strip()
             logger.info("llm_response", post_id=0, length=len(content), preview=content[:200], msg_type=type(last_msg).__name__)

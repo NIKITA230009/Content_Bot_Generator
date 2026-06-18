@@ -26,6 +26,10 @@ class Config(BaseSettings):
     LLM_MAX_RETRIES: int = 3
     MAX_RETRIES: int = 10
 
+    TELETHON_API_ID: int = 0
+    TELETHON_API_HASH: str = ""
+    TELETHON_PHONE: str = ""
+
     @property
     def SOURCE_TARGET_MAP(self) -> dict[int, list[int]]:
         raw = json.loads(self.SOURCE_TARGET_MAP_RAW)

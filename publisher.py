@@ -1,8 +1,9 @@
 import asyncio
+import base64
 import time
 import structlog
 from aiogram import Bot
-from aiogram.types import InputMediaPhoto, InputMediaVideo
+from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.client.default import DefaultBotProperties
 from config import config
 from db import GeneratedContent, get_generated_content, log_publication, is_already_published
@@ -47,6 +48,7 @@ async def process_content(content_id_str: str):
         except Exception as e:
             await log_publication(content_id, target_id, None, False, str(e))
             logger.error("publish_error", content_id=content_id, target_id=target_id, error=str(e))
+            raise
 
 async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
     global _bot
@@ -63,12 +65,15 @@ async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
     if media:
         group: list[InputMediaPhoto | InputMediaVideo] = []
         for i, m in enumerate(media):
-            if m["type"] == "photo":
-                inp = InputMediaPhoto(media=m["file_id"])
+            caption = text if i == 0 else None
+            if "file_bytes64" in m:
+                raw_media = BufferedInputFile(base64.b64decode(m["file_bytes64"]), filename="media")
             else:
-                inp = InputMediaVideo(media=m["file_id"])
-            if i == 0:
-                inp.caption = text  # type: ignore[arg-type]
+                raw_media = m["file_id"]
+            if m["type"] == "photo":
+                inp = InputMediaPhoto(media=raw_media, caption=caption)
+            else:
+                inp = InputMediaVideo(media=raw_media, caption=caption)
             group.append(inp)
         msgs = await bot.send_media_group(channel_id, group)  # type: ignore[arg-type]
         return msgs[0].message_id
