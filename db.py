@@ -63,7 +63,7 @@ class PublishLog(Base):
     __tablename__ = "publish_log"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    generated_content_id = Column(BigInteger, ForeignKey("generated_content.id"), nullable=True)
+    generated_content_id = Column(BigInteger, ForeignKey("generated_content.id", ondelete="CASCADE"), nullable=False)
     target_channel_id = Column(BigInteger, nullable=False)
     published_message_id = Column(BigInteger, nullable=True)
     published_at = Column(DateTime(timezone=True), server_default=func.now())
