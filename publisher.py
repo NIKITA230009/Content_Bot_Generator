@@ -21,6 +21,9 @@ async def process_content(content_id_str: str):
     if not content:
         logger.warning("generated_content_not_found", content_id=content_id)
         return
+    if content.skipped:
+        logger.info("content_skipped", content_id=content_id)
+        return
 
     source_id = content.raw_post.source_channel_id
     target_ids = config.SOURCE_TARGET_MAP.get(source_id, [])

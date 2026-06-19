@@ -1,0 +1,112 @@
+XREADGROUP BLOCK — macOS баги и миграция на Linux
+===================================================
+
+1. ПРОБЛЕМА НА macOS
+────────────────────
+
+1.1 TCP half-open после BLOCK 30000
+
+  XREADGROUP BLOCK 30000 держит TCP-соединение открытым до 30 секунд.
+  Redis (или homebrew redis-proxy) закрывает idle-соединение через ~60 сек,
+  но клиент НЕ УЗНАЁТ об этом, потому что находится в состоянии
+  «ждём данные от сервера» (не отправляет данные сам).
+
+  Результат: asyncio-корутина висит в xreadgroup() вечно, пока не сработает
+  socket_timeout = 60 секунд на redis-py.
+
+1.2 TCP keepalive не спасает
+
+  На macOS TCP_KEEPIDLE = 7200 секунд (2 часа) и не настраивается
+  per-socket — только глобально через sysctl.
+  redis-py параметр socket_keepalive=True включает keepalive,
+  но с дефолтными 7200 сек пользы нет.
+
+  На Linux можно выставить:
+    socket_keepalive_options={
+        socket.TCP_KEEPIDLE: 30,
+        socket.TCP_KEEPINTVL: 10,
+        socket.TCP_KEEPCNT: 3,
+    }
+  → мёртвое соединение детектится за 30 + 10*3 = 60 сек.
+
+1.3 asyncio.wait_for — потеря сообщений
+
+  Попытка «спастись» от зависания через:
+    result = await asyncio.wait_for(r.xreadgroup(...), timeout=35)
+
+  приводит к ПОТЕРЕ СООБЩЕНИЙ: wait_for отменяет корутину mid-ответа.
+  Redis уже отправил ответ в сокет, Python его не обработал,
+  consumer group считает сообщение доставленным.
+
+1.4 Решение для macOS (текущее)
+
+  Отказ от BLOCK полностью. Неблокирующий XREADGROUP + asyncio.sleep(3):
+    result = await r.xreadgroup(group, consumer, {stream: ">"}, count=5)
+    ...
+    await asyncio.sleep(3)
+
+  Соединение не висит, half-open невозможен, потери сообщений нет,
+  задержка 0-3 секунды.
+
+
+2. ПЛАН ПЕРЕХОДА НА LINUX (Ubuntu Server)
+─────────────────────────────────────────
+
+2.1 Условия для BLOCK на Linux
+
+  - TCP keepalive настраивается per-socket → half-open детектится
+  - redis.conf timeout не убивает idle-соединения (timeout=0)
+  - XREADGROUP BLOCK держит 1 TCP-соединение вместо 1 req/3 сек
+  - При 10+ воркерах меньше нагрузки на Redis (10 req/3сек vs 1 соединение)
+
+2.2 Файлы для изменения
+
+  A. stream_worker.py — вернуть BLOCK:
+
+       result = await r.xreadgroup(
+           group, consumer, {stream: ">"},
+           count=1, block=30000,
+       )
+       # without asyncio.wait_for
+
+       Убрать asyncio.sleep(3) — заменить на обычный continue.
+       Код возвращается к версии из commit <hash>,
+       но БЕЗ asyncio.wait_for.
+
+  B. redis_storage.py — настроить keepalive:
+
+       _redis = aioredis.from_url(
+           config.REDIS_URL,
+           decode_responses=True,
+           socket_timeout=60,
+           socket_keepalive=True,
+           socket_keepalive_options={
+               socket.TCP_KEEPIDLE: 30,
+               socket.TCP_KEEPINTVL: 10,
+               socket.TCP_KEEPCNT: 3,
+           },
+       )
+
+       Добавить import socket в начале файла.
+
+  C. redis.conf на сервере — проверить:
+
+       timeout 0
+       tcp-keepalive 0    # отключить встроенный, полагаться на клиент
+
+2.3 Потенциальный риск
+
+  Если промежуточный слой (nginx, HAProxy, cloudflare tunnel) обрывает
+  бездействующие соединения быстрее, чем 30+10*3=60 сек keepalive,
+  BLOCK снова начнёт висеть.
+
+  Проверка на сервере после деплоя:
+
+      redis-cli -h localhost monitor | grep -i "xreadgroup"
+      # Если XREADGROUP перестаёт логироваться >60 сек → BLOCK повис
+
+      redis-cli client list | grep -i "xreadgroup"
+      # Искать "flags: b" (blocked) — если число растёт → проблемы
+
+  В таком случае — откатиться на polling (sleep 3), который гарантированно
+  работает на любой платформе.

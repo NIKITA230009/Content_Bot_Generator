@@ -11,6 +11,7 @@ class Config(BaseSettings):
 
     BOT_TOKEN: str = ""
     ADMIN_CHAT_ID: int = 0
+    MODERATION_CHANNEL_ID: int = 0
 
     SOURCE_TARGET_MAP_RAW: str = "{}"
     PUBLISH_INTERVALS_RAW: str = "{}"

@@ -8,7 +8,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from config import config
 from db import get_raw_post_by_id, save_generated_content, mark_raw_post_processed
-from redis_storage import push_to_ready_stream
+from redis_storage import push_to_ready_stream, push_to_moderation_stream
 from stream_worker import stream_worker
 
 logger = structlog.get_logger()
@@ -96,11 +96,34 @@ async def ask_for_rewrite(text: str) -> str:
             last_msg = result["messages"][-1]
             content = last_msg.content.strip()
             logger.info("llm_response", post_id=0, length=len(content), preview=content[:200], msg_type=type(last_msg).__name__)
+            logger.info("llm_token_usage", tokens=_count_tokens(last_msg))
             return content
     except Exception as e:
         logger.exception("agent_invoke_failed", error=str(e))
         return text
-    
+
+@clean_output
+async def rewrite_with_custom_prompt(text: str, custom_prompt: str) -> str:
+    if not text.strip():
+        return text
+    messages = [
+        SystemMessage(content=custom_prompt),
+        HumanMessage(content=text),
+    ]
+    try:
+        async with _llm_sem:
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": messages}),
+                timeout=60.0,
+            )
+            last_msg = result["messages"][-1]
+            content = last_msg.content.strip()
+            logger.info("custom_rewrite_response", length=len(content), preview=content[:200], msg_type=type(last_msg).__name__)
+            logger.info("custom_rewrite_token_usage", tokens=_count_tokens(last_msg))
+            return content
+    except Exception as e:
+        logger.exception("custom_rewrite_failed", error=str(e))
+        return text
 
 
 # ── Worker logic ─────────────────────────────────────────
@@ -120,7 +143,7 @@ async def process_post(post_id_str: str):
     logger.info("rewritten_text", post_id=post_id, length=len(rewritten), preview=rewritten[:120])
     gen_id = await save_generated_content(raw.id, rewritten, config.MODEL_NAME)  # type: ignore[arg-type]
     await mark_raw_post_processed(raw.id, gen_id)  # type: ignore[arg-type]
-    await push_to_ready_stream(gen_id)
+    await push_to_moderation_stream(gen_id)
     logger.info("content_generated", post_id=post_id, gen_id=gen_id)
 
 

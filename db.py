@@ -32,6 +32,7 @@ class GeneratedContent(Base):
     raw_post_id = Column(BigInteger, ForeignKey("raw_posts.id"), nullable=True)
     rewritten_text = Column(Text, nullable=False)
     model_used = Column(Text, nullable=True)
+    skipped = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     raw_post = relationship("RawPost", foreign_keys=[raw_post_id], lazy="selectin")
@@ -143,12 +144,13 @@ async def mark_raw_post_processed(post_id: int, gen_id: int):
         await session.commit()
 
 
-async def save_generated_content(raw_post_id: int, rewritten_text: str, model_used: str) -> int:
+async def save_generated_content(raw_post_id: int, rewritten_text: str, model_used: str, skipped: bool = False) -> int:
     async with get_session() as session:
         gc = GeneratedContent(
             raw_post_id=raw_post_id,
             rewritten_text=rewritten_text,
             model_used=model_used,
+            skipped=skipped,
         )
         session.add(gc)
         await session.commit()
@@ -197,3 +199,34 @@ async def is_already_published(generated_content_id: int, target_channel_id: int
             )
         )
         return result.first() is not None
+
+
+async def update_generated_text(content_id: int, new_text: str) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(GeneratedContent)
+            .where(GeneratedContent.id == content_id)
+            .values(rewritten_text=new_text)
+        )
+        await session.commit()
+
+
+async def mark_generated_skipped(content_id: int) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(GeneratedContent)
+            .where(GeneratedContent.id == content_id)
+            .values(skipped=True)
+        )
+        await session.commit()
+
+
+async def get_raw_text_by_content_id(content_id: int) -> str | None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(GeneratedContent).where(GeneratedContent.id == content_id)
+        )
+        gc = result.scalar_one_or_none()
+        if gc is None or gc.raw_post is None:
+            return None
+        return gc.raw_post.text or ""
