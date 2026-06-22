@@ -9,6 +9,7 @@ from telethon_listener import run_telethon_listener
 from content_generator import run_generator_worker
 from publisher import run_publisher_worker
 from moderator import router as moderator_router, moderation_worker
+from admin_commands import router as admin_router
 
 logger = structlog.get_logger()
 
@@ -24,6 +25,7 @@ async def main():
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher()
     dp.include_router(moderator_router)
+    dp.include_router(admin_router)
 
     logger.info(
         "content_bot_starting",

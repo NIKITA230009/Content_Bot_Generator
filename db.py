@@ -1,6 +1,8 @@
+import json
+
 from sqlalchemy import (
-    Column, BigInteger, Text, Boolean, DateTime, JSON,
-    ForeignKey, UniqueConstraint, select, update, func,
+    Column, BigInteger, Text, Boolean, DateTime, JSON, Integer,
+    ForeignKey, UniqueConstraint, select, update, func, delete as sa_delete,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -22,6 +24,18 @@ class SourceChannel(Base):
     id = Column(BigInteger, primary_key=True)
     title = Column(Text, nullable=True)
     username = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BotSource(Base):
+    __tablename__ = "bot_sources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(Text, nullable=False, unique=True)
+    channel_id = Column(BigInteger, nullable=True, unique=True)
+    title = Column(Text, nullable=True)
+    target_channel_ids = Column(Text, nullable=False, default="[]")
+    publish_interval = Column(Integer, nullable=False, default=300)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -230,3 +244,77 @@ async def get_raw_text_by_content_id(content_id: int) -> str | None:
         if gc is None or gc.raw_post is None:
             return None
         return gc.raw_post.text or ""
+
+
+# ── BotSource CRUD ───────────────────────────────────────
+
+
+async def add_bot_source(username: str, target_ids: list[int] | None = None, interval: int = 300) -> BotSource | None:
+    async with get_session() as session:
+        obj = BotSource(
+            username=username,
+            target_channel_ids=json.dumps(target_ids or []),
+            publish_interval=interval,
+        )
+        session.add(obj)
+        try:
+            await session.commit()
+            return obj
+        except IntegrityError:
+            await session.rollback()
+            return None
+
+
+async def remove_bot_source(identifier: str | int) -> bool:
+    async with get_session() as session:
+        if isinstance(identifier, int):
+            stmt = sa_delete(BotSource).where(BotSource.channel_id == identifier)
+        else:
+            stmt = sa_delete(BotSource).where(BotSource.username == identifier)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def get_all_bot_sources() -> list[BotSource]:
+    async with get_session() as session:
+        result = await session.execute(select(BotSource).order_by(BotSource.created_at))
+        return list(result.scalars().all())
+
+
+async def get_bot_source_by_channel_id(channel_id: int) -> BotSource | None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(BotSource).where(BotSource.channel_id == channel_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_bot_source_by_username(username: str) -> BotSource | None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(BotSource).where(BotSource.username == username)
+        )
+        return result.scalar_one_or_none()
+
+
+async def resolve_bot_source(username: str, channel_id: int, title: str) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.username == username)
+            .values(channel_id=channel_id, title=title)
+        )
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def update_bot_source_targets(channel_id: int, target_ids: list[int]) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(target_channel_ids=json.dumps(target_ids))
+        )
+        await session.commit()
+        return result.rowcount > 0

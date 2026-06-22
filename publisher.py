@@ -1,12 +1,13 @@
 import asyncio
 import base64
+import json
 import time
 import structlog
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 from aiogram.client.default import DefaultBotProperties
 from config import config
-from db import GeneratedContent, get_generated_content, log_publication, is_already_published
+from db import GeneratedContent, get_generated_content, log_publication, is_already_published, get_bot_source_by_channel_id
 from redis_storage import get_last_publish_time, set_last_publish_time
 from stream_worker import stream_worker
 
@@ -26,7 +27,13 @@ async def process_content(content_id_str: str):
         return
 
     source_id = content.raw_post.source_channel_id
-    target_ids = config.SOURCE_TARGET_MAP.get(source_id, [])
+
+    db_source = await get_bot_source_by_channel_id(source_id)
+    if db_source:
+        target_ids = json.loads(db_source.target_channel_ids)
+    else:
+        target_ids = config.SOURCE_TARGET_MAP.get(source_id, [])
+
     if not target_ids:
         logger.warning("no_target_channels", source_id=source_id)
         return
@@ -37,7 +44,10 @@ async def process_content(content_id_str: str):
             continue
 
         last_time = await get_last_publish_time(target_id)
-        interval = config.PUBLISH_INTERVALS.get(target_id, 300)
+        if db_source:
+            interval = db_source.publish_interval
+        else:
+            interval = config.PUBLISH_INTERVALS.get(target_id, 300)
         wait = interval - (time.time() - last_time)
         if wait > 0:
             logger.info("waiting_interval", target_id=target_id, seconds=round(wait))

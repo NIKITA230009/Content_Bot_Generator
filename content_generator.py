@@ -138,7 +138,7 @@ async def process_post(post_id_str: str):
         logger.warning("raw_post_not_found", post_id=post_id)
         return
 
-    logger.info("raw_post_text", post_id=post_id, text_length=len(raw.text or ""), text_preview=(raw.text or "")[:100])
+    logger.info("raw_post_text", post_id=post_id, text_length=len(raw.text or ""), text_preview=(raw.text or "")[:100]) # type: ignore
     rewritten = await ask_for_rewrite(raw.text or "")  # type: ignore[arg-type]
     logger.info("rewritten_text", post_id=post_id, length=len(rewritten), preview=rewritten[:120])
     gen_id = await save_generated_content(raw.id, rewritten, config.MODEL_NAME)  # type: ignore[arg-type]
