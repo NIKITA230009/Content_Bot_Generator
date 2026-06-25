@@ -11,9 +11,27 @@ from db import GeneratedContent, get_generated_content, log_publication, is_alre
 from redis_storage import get_last_publish_time, set_last_publish_time
 from stream_worker import stream_worker
 
+
 logger = structlog.get_logger()
 
 _bot: Bot | None = None
+
+
+def _fix_markdown(text: str) -> str:
+    if text.count("**") % 2 != 0:
+        text += "**"
+    if text.count("`") % 2 != 0:
+        text += "`"
+    if text.count("[") > text.count("]"):
+        text += "]"
+    return text
+
+
+def _get_bot() -> Bot:
+    global _bot
+    if _bot is None:
+        _bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+    return _bot
 
 
 async def process_content(content_id_str: str):
@@ -64,35 +82,34 @@ async def process_content(content_id_str: str):
             raise
 
 async def _send_to_channel(channel_id: int, content: GeneratedContent) -> int:
-    global _bot
-    if _bot is None:
-        _bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
-    bot = _bot
-
-    media = content.raw_post.media or []
-    text = content.rewritten_text or ""
+    media = content.raw_post.regenerated_media or content.raw_post.media or []
+    text = _fix_markdown(content.rewritten_text or "")
 
     if not text and not media:
         raise ValueError("empty content — nothing to send")
 
-    if media:
-        group: list[InputMediaPhoto | InputMediaVideo] = []
-        for i, m in enumerate(media):
-            caption = text if i == 0 else None
-            if "file_bytes64" in m:
-                raw_media = BufferedInputFile(base64.b64decode(m["file_bytes64"]), filename="media")
-            else:
-                raw_media = m["file_id"]
-            if m["type"] == "photo":
-                inp = InputMediaPhoto(media=raw_media, caption=caption)
-            else:
-                inp = InputMediaVideo(media=raw_media, caption=caption)
-            group.append(inp)
-        msgs = await bot.send_media_group(channel_id, group)  # type: ignore[arg-type]
-        return msgs[0].message_id
+    if not media:
+        bot = _get_bot()
+        msg = await bot.send_message(channel_id, text)  # type: ignore[arg-type]
+        return msg.message_id
 
-    msg = await bot.send_message(channel_id, text)  # type: ignore[arg-type]
-    return msg.message_id
+    # media → Bot API (media group)
+
+    bot = _get_bot()
+    group: list[InputMediaPhoto | InputMediaVideo] = []
+    for i, m in enumerate(media):
+        caption = text if i == 0 else None
+        if "file_bytes64" in m:
+            raw_media = BufferedInputFile(base64.b64decode(m["file_bytes64"]), filename="media")
+        else:
+            raw_media = m["file_id"]
+        if m["type"] == "photo":
+            inp = InputMediaPhoto(media=raw_media, caption=caption, parse_mode=None)
+        else:
+            inp = InputMediaVideo(media=raw_media, caption=caption, parse_mode=None)
+        group.append(inp)
+    msgs = await bot.send_media_group(channel_id, group)  # type: ignore[arg-type]
+    return msgs[0].message_id
 
 
 async def run_publisher_worker():

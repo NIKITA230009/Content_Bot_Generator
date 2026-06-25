@@ -10,7 +10,7 @@ class Config(BaseSettings):
     )
 
     BOT_TOKEN: str = ""
-    ADMIN_CHAT_ID: int = 0
+    ADMIN_IDS: list[int] = []
     MODERATION_CHANNEL_ID: int = 0
 
     SOURCE_TARGET_MAP_RAW: str = "{}"
@@ -26,6 +26,8 @@ class Config(BaseSettings):
     MODEL_MAX_TOKENS: int = 1024
     LLM_MAX_RETRIES: int = 3
     MAX_RETRIES: int = 10
+
+    VERTEX_PROJECT_ID: str = ""
 
     TELETHON_API_ID: int = 0
     TELETHON_API_HASH: str = ""

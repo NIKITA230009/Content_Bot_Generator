@@ -3,10 +3,9 @@ import structlog
 
 from redis_storage import add_media_group_part, get_media_group
 
-logger = structlog.get_logger()
+logger = structlog.get_logger() 
 
 _media_futures: dict[str, asyncio.Future] = {}
-
 
 async def aggregate_media_message(msg_data: dict, timeout: int) -> dict | None:
     if not msg_data.get("media_group_id"):
@@ -29,7 +28,6 @@ async def aggregate_media_message(msg_data: dict, timeout: int) -> dict | None:
         return await fut
 
     return None
-
 
 async def _aggregation_timer(group_id: str, timeout: int):
     try:

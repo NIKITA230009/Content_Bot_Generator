@@ -4,8 +4,8 @@ import structlog
 from telethon import TelegramClient, events
 
 from config import config
-from db import save_raw_post
-from redis_storage import add_tokens, push_to_raw_stream
+from db import get_bot_source_by_channel_id, save_raw_post
+from redis_storage import add_tokens, push_to_raw_stream, push_to_media_stream
 from media_aggregator import aggregate_media_message
 
 logger = structlog.get_logger()
@@ -17,6 +17,15 @@ _source_cache_lock = asyncio.Lock()
 
 def get_client() -> TelegramClient | None:
     return _client
+
+
+def _bare_id(chat_id: int) -> int:
+    """Конвертирует `-1003946905750` → `3946905750` (убирает -100 префикс канала)."""
+    if chat_id < 0:
+        s = str(chat_id)
+        # -1001946905750 → 1946905750, -1003946905750 → 3946905750
+        return int(s[4:]) if s.startswith("-100") else int(s[3:])
+    return chat_id
 
 
 async def refresh_source_cache():
@@ -68,7 +77,12 @@ async def _process_message(msg, chat_id: int, aggregate: bool = True) -> bool:
         media=post.get("media", []),
     )
     if post_id:
-        await push_to_raw_stream(post_id)
+        source = await get_bot_source_by_channel_id(chat_id)
+        if source and (source.image_style_prompt or source.image_style_prompts or source.image_search_enabled):
+            await push_to_media_stream(post_id)
+        else:
+            await push_to_raw_stream(post_id)
+
         await add_tokens(str(chat_id), 1)
         return True
     return False
@@ -88,10 +102,11 @@ async def fetch_historical_messages(channel_id: int, limit: int = 10):
     logger.info("backfill_complete", channel_id=channel_id, count=len(messages))
 
 
-async def run_telethon_listener():
+async def _create_and_listen():
+    """Создаёт клиента, подключается, регистрирует handler и слушает до дисконнекта."""
     global _client
 
-    _client = TelegramClient(
+    client = TelegramClient(
         "user_session",
         config.TELETHON_API_ID,
         config.TELETHON_API_HASH,
@@ -101,21 +116,46 @@ async def run_telethon_listener():
         lang_code="ru",
         system_lang_code="ru-RU",
     )
+    _client = client
 
-    await _client.start(phone=config.TELETHON_PHONE) # type: ignore
+    await client.start(phone=config.TELETHON_PHONE) # type: ignore
     await refresh_source_cache()
 
-    @_client.on(events.NewMessage()) # type: ignore
+    logger.info("telethon_cache_snapshot", cache=list(_source_cache))
+
+    @client.on(events.NewMessage()) # type: ignore
     async def handler(event):
+        cid = _bare_id(event.chat_id)
+        logger.info("telethon_event_received", chat_id=event.chat_id, cid=cid, msg_id=event.message.id)
         async with _source_cache_lock:
-            if event.chat_id not in _source_cache:
+            if cid not in _source_cache:
+                logger.info("telethon_ignored_other_channel", chat_id=event.chat_id, cid=cid)
                 return
-        ok = await _process_message(event.message, event.chat_id)
+        ok = await _process_message(event.message, cid)
         if ok:
             logger.info("telethon_raw_post_saved", message_id=event.message.id)
         else:
             logger.info("telethon_raw_post_skipped", message_id=event.message.id)
 
-    await _client.run_until_disconnected() # type: ignore
-    
+    logger.info("telethon_listening")
+    await client.run_until_disconnected() # type: ignore
+
+
+async def run_telethon_listener():
+    """Бесконечный цикл: подключается, слушает, при дисконнекте переподключается."""
+    global _client
+    while True:
+        try:
+            await _create_and_listen()
+        except Exception as e:
+            logger.exception("telethon_crashed", error=str(e))
+        finally:
+            if _client: # type: ignore
+                try:
+                    await _client.disconnect() # type: ignore
+                except Exception:
+                    pass
+                _client = None
+            logger.warning("telethon_reconnecting_in_5s")
+            await asyncio.sleep(5)
     

@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from config import config
 from db import init_db
 from telethon_listener import run_telethon_listener
-from content_generator import run_generator_worker
+from content_generator import run_generator_worker, run_media_worker
 from publisher import run_publisher_worker
 from moderator import router as moderator_router, moderation_worker
 from admin_commands import router as admin_router
@@ -46,6 +46,8 @@ async def main():
         tg.create_task(_wrap("telethon", run_telethon_listener()))
         logger.info("task_started", name="generator")
         tg.create_task(_wrap("generator", run_generator_worker()))
+        logger.info("task_started", name="media_processor")
+        tg.create_task(_wrap("media_processor", run_media_worker()))
         logger.info("task_started", name="publisher")
         tg.create_task(_wrap("publisher", run_publisher_worker()))
         logger.info("task_started", name="moderation")

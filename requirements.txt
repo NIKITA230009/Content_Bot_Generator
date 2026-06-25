@@ -10,3 +10,5 @@ httpx>=0.27.0
 sqlalchemy>=2.0
 alembic>=1.12
 telethon>=1.36.0
+langchain-google-genai>=4.0.0
+google-cloud-vision>=3.0.0

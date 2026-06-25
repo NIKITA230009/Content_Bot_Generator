@@ -2,7 +2,7 @@ import json
 
 from sqlalchemy import (
     Column, BigInteger, Text, Boolean, DateTime, JSON, Integer,
-    ForeignKey, UniqueConstraint, select, update, func, delete as sa_delete,
+    ForeignKey, UniqueConstraint, select, update, func, delete as sa_delete, text,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -36,6 +36,10 @@ class BotSource(Base):
     title = Column(Text, nullable=True)
     target_channel_ids = Column(Text, nullable=False, default="[]")
     publish_interval = Column(Integer, nullable=False, default=300)
+    system_prompt = Column(Text, nullable=True)
+    image_style_prompt = Column(Text, nullable=True)
+    image_style_prompts = Column(JSON, nullable=True)
+    image_search_enabled = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -62,6 +66,7 @@ class RawPost(Base):
     text = Column(Text, nullable=True)
     media_group_id = Column(Text, nullable=True)
     media = Column(JSON, nullable=True)
+    regenerated_media = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed = Column(Boolean, default=False)
     generated_content_id = Column(BigInteger, ForeignKey("generated_content.id"), nullable=True)
@@ -113,6 +118,13 @@ async def init_db():
     engine = create_async_engine(config.DATABASE_URL)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "ALTER TABLE bot_sources ADD COLUMN IF NOT EXISTS image_style_prompts JSON"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE bot_sources ADD COLUMN IF NOT EXISTS "
+            "image_search_enabled BOOLEAN DEFAULT FALSE"
+        ))
     await engine.dispose()
 
 
@@ -309,6 +321,25 @@ async def resolve_bot_source(username: str, channel_id: int, title: str) -> bool
         return result.rowcount > 0
 
 
+async def update_raw_post_media(post_id: int, media: list) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(RawPost).where(RawPost.id == post_id).values(media=media)
+        )
+        await session.commit()
+
+
+async def update_source_system_prompt(channel_id: int, prompt: str | None) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(system_prompt=prompt)
+        )
+        await session.commit()
+        return result.rowcount > 0
+
+
 async def update_bot_source_targets(channel_id: int, target_ids: list[int]) -> bool:
     async with get_session() as session:
         result = await session.execute(
@@ -316,5 +347,60 @@ async def update_bot_source_targets(channel_id: int, target_ids: list[int]) -> b
             .where(BotSource.channel_id == channel_id)
             .values(target_channel_ids=json.dumps(target_ids))
         )
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def update_source_image_style(channel_id: int, prompt: str | None) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(image_style_prompt=prompt, image_style_prompts=None))
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def update_source_image_styles(channel_id: int, prompts: list[str]) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(image_style_prompts=prompts, image_style_prompt=None))
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def add_source_image_style(channel_id: int, prompt: str) -> bool:
+    async with get_session() as session:
+        source = await session.execute(
+            select(BotSource).where(BotSource.channel_id == channel_id))
+        s = source.scalar_one_or_none()
+        if not s:
+            return False
+        current = s.image_style_prompts or []
+        current.append(prompt)
+        await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(image_style_prompts=current))
+        await session.commit()
+        return True
+
+
+async def update_raw_post_regenerated_media(post_id: int, media: list) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(RawPost).where(RawPost.id == post_id).values(regenerated_media=media)
+        )
+        await session.commit()
+
+
+async def update_source_image_search(channel_id: int, enabled: bool) -> bool:
+    async with get_session() as session:
+        result = await session.execute(
+            update(BotSource)
+            .where(BotSource.channel_id == channel_id)
+            .values(image_search_enabled=enabled))
         await session.commit()
         return result.rowcount > 0

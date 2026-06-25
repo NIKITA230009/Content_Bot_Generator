@@ -52,6 +52,12 @@ async def push_to_moderation_stream(content_id: int):
     logger.info("moderation_stream_pushed", stream="stream:moderation", item=content_id)
 
 
+async def push_to_media_stream(post_id: int):
+    r = await get_redis()
+    await r.xadd("stream:media", {"item": str(post_id)})
+    logger.info("media_stream_pushed", stream="stream:media", item=post_id)
+
+
 async def ensure_stream_group(stream: str, group: str):
     r = await get_redis()
     try:
